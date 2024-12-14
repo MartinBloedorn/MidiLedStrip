@@ -4,8 +4,8 @@
 
 #include "Colors.h"
 
-#define LED_PIN 1
-#define LED_COUNT 90        //18
+#define LED_PIN 0
+#define LED_COUNT 280       //18
 #define LED_BRIGHTNESS 255  //40  // (max = 255) ~>  max 10mA per LED
 
 // https://adafruit.github.io/Adafruit_NeoPixel/html/class_adafruit___neo_pixel.html
@@ -17,6 +17,8 @@ Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 class NoteToStrip {
 public:
+  static const uint8_t CC_STRIP_LENGTH = 14;      // todo
+  static const uint8_t CC_STRIP_BRIGTHNESS = 15;  // todo + debounce time
 
   static const uint8_t CC_NOTE_MIN = 16;
   static const uint8_t CC_NOTE_MAX = 17;
@@ -125,7 +127,7 @@ public:
     print("    ADSR.a  ", settings.adsr.a);
     print("    ADSR.s  ", settings.adsr.s);
     print("    ADSR.r  ", settings.adsr.r);
- 
+
     print("mod.hue     ", settings.mod.hue);
     print("mod.width   ", settings.mod.width);
     print("mod.ADSR.ar ", settings.mod.ar);
@@ -153,7 +155,7 @@ public:
         m_channelSettings[ch].hue = normMidiVal(value) * 360.0;
         break;
       case CC_WIDTH:
-        m_channelSettings[ch].width = normMidiVal(value);
+        m_channelSettings[ch].width = normMidiVal(value) / 10.0;
         break;
       case CC_ADSR_A:
         m_channelSettings[ch].adsr.a = normMidiVal(value) * ADSR_CC_TO_MS;
@@ -189,21 +191,26 @@ public:
 
     if (note < m_channelSettings[ch].noteMin || note > m_channelSettings[ch].noteMax)
       return;
-    for (size_t i = 0; i < m_notes.size(); ++i) {
-      // Add new entry on available slot
-      if (vel && !m_notes[i].note) {
-        m_notes[i].note = note;
-        m_notes[i].vel = vel;
-        m_notes[i].ch = ch;
-        m_notes[i].r = false;
-        m_notes[i].tstamp = millis();
-        break;
-        // Update existing entry
-      } else if (m_notes[i].note == note && m_notes[i].ch == ch) {
-        m_notes[i].r = true;
-        m_notes[i].tstamp = millis();
+
+    size_t n = m_notes.size();
+    size_t found_index = n;
+    size_t empty_index = n;
+
+    for (size_t i = 0; i < n; ++i) {
+      if (m_notes[i].note == note && m_notes[i].ch == ch) {
+        found_index = i;
         break;
       }
+      if (empty_index == n && !m_notes[i].note)
+        empty_index = i;
+    }
+
+    if (size_t i = found_index < n ? found_index : empty_index; i < n) {
+      m_notes[i].note = note;
+      m_notes[i].vel = vel;
+      m_notes[i].ch = ch;
+      m_notes[i].r = (vel == 0);
+      m_notes[i].tstamp = millis();
     }
   }
 
@@ -222,16 +229,16 @@ public:
     return width;
   }
 
+  // todo: create a v2 that interpolates between the previous envelope state,
+  // which should be part of NoteState
   double computeEnvelope(uint32_t t, uint8_t ch, uint8_t vel, uint32_t tonset, bool r) {
     auto& settings = m_channelSettings[ch];
 
     float dt = t - tonset;
-    if (dt <= 0.0) return 0.0;
-
     float rampt = r ? settings.adsr.r : settings.adsr.a;
     rampt *= (1.0 - settings.mod.ar * normMidiVal(vel));  // AR modulation
 
-    float k = min(dt / rampt, 1.0);
+    float k = min((dt + 1.0) / (rampt + 1.0), 1.0);
     k = r ? 1.0 - k : k;
     k *= settings.adsr.s * (1.0 - settings.mod.s * (1.0 - normMidiVal(vel)));  // S modulation
 
@@ -332,14 +339,11 @@ void onMIDINoteOff(uint8_t channel, uint8_t note, uint8_t velocity) {
 
 /* * * * * * MAIN  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-
-// TODO
-// CC configs per channel for base values of: width, color, ADSR
-// + config for how velocity can modulate these parameters (i.e. speed->width)
-// + color offset CC
-
-// Use only ASR, rename to NoteEnvelopePhase, return to "released" flag -> 'S' is just a gain, not a phase per se
-// NOTE! MIDI lib uses 1-based channels; settings, however, are 0-based.
+/*
+ * TODOs:
+ * - Interpolate ASR when note gets retriggered (see computeEnvelope)
+ * - Store parameters in EEPROM.
+ */
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -360,5 +364,5 @@ void setup() {
 void loop() {
   while (usbMIDI.read()) {}
   noteToStrip.update();
-  delay(1);
+  delayMicroseconds(500);
 }
